@@ -1,38 +1,28 @@
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
-                  // #[serde(skip)] // This how you opt-out of serialization of a field
+use std::path::{self, PathBuf};
+use std::sync::Arc;
+
+use log::error;
+
+use crate::MediaPlayer;
+
+/// Struct representing configured state of `soundboardbot`
 pub struct SoundboardApp {
+    // List of `SoundCue`s to display buttons for
     sound_cues: Vec<SoundCue>,
+
+    // Sender for sending filepaths to media player thread
+    player: MediaPlayer,
 }
 
-impl Default for SoundboardApp {
-    fn default() -> Self {
-        Self {
-            sound_cues: (1..=9 as i32)
-                .map(|i| SoundCue {
-                    label: i.to_string(),
-                    asset_path: Some(format!("../assets/sounds/test-tts{i}.m4a")),
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(default)]
+/// Details of a sound that can be played by `soundboardbot`
+#[derive(Default)]
 struct SoundCue {
+    // A given name for a cue
     label: String,
-    asset_path: Option<String>,
-}
-
-impl Default for SoundCue {
-    fn default() -> Self {
-        Self {
-            label: String::from("[No sound loaded]"),
-            asset_path: None,
-        }
-    }
+    // Path to the target sound file
+    audio_path: Option<PathBuf>,
+    // Path to an image to use as the cue's icon
+    _image_path: Option<PathBuf>,
 }
 
 impl SoundboardApp {
@@ -40,23 +30,22 @@ impl SoundboardApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
-
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+        let player = MediaPlayer::start_on_default_device().expect("Could not start media player");
+        let cues = (1..=9).map(|i| SoundCue {
+            label: format!("sound {i}"),
+            audio_path: Some(path::absolute(PathBuf::from(format!(
+                "./assets/sounds/test/test-tts{i}.m4a"
+            ))).expect("Could not get absolute path of file")),
+            ..Default::default()
+        });
+        Self {
+            sound_cues: Vec::from_iter(cues),
+            player,
         }
-
-        Default::default()
     }
 }
 
 impl eframe::App for SoundboardApp {
-    /// Called by the frame work to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
-    }
-
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -81,11 +70,11 @@ impl eframe::App for SoundboardApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
-
+            ui.heading("soundboardbot");
+            ui.add_space(16.0);
             ui.horizontal(|ui| {
                 for cue in &self.sound_cues {
-                    soundboard_cue_button(ui, cue);
+                    self.soundboard_cue_button(ui, cue);
                 }
             });
 
@@ -96,17 +85,33 @@ impl eframe::App for SoundboardApp {
     }
 }
 
-fn soundboard_cue_button(ui: &mut egui::Ui, cue: &SoundCue) {
-    if ui.button(&cue.label).clicked() {
-        println!("Attempted to play sound \"{}\"", cue.label);
+impl SoundboardApp {
+    // Render button that spawns a media player task on click
+    fn soundboard_cue_button(&self, ui: &mut egui::Ui, cue: &SoundCue) {
+        let cue_button = egui::Button::new(&cue.label).min_size([30.0, 40.0].into());
+        if ui.add(cue_button).clicked() {
+            if let Some(path) = &cue.audio_path {
+                log::debug!(
+                    "Attempting to play sound \"{}\" ({})",
+                    cue.label,
+                    path.to_string_lossy(),
+                );
+                match self.player.queue_sound(Arc::new(path.clone())) {
+                    Ok(_) => (),
+                    Err(e) => error!("Playback failed with error {:?}", e),
+                }
+            }
+        }
     }
 }
 
 fn made_with_credits(ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label("Made by James using ");
+        ui.label("Made by James P using ");
         ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-        ui.label(" and more tbd~");
+        ui.label(" and ");
+        ui.hyperlink_to("awedio", "https://github.com/10buttons/awedio");
+        ui.label(".");
     });
 }
